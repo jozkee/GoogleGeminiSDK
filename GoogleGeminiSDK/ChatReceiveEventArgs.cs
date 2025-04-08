@@ -4,8 +4,8 @@ using Microsoft.Extensions.AI;
 namespace GoogleGeminiSDK;
 public class ChatReceiveEventArgs : EventArgs
 {
-	public ChatMessage Message { get; }
+	public IList<ChatMessage> Messages { get; }
 
-	internal ChatReceiveEventArgs(ChatMessage message) =>
-		Message = message;
+	internal ChatReceiveEventArgs(IList<ChatMessage> messages) =>
+		Messages = messages;
 }

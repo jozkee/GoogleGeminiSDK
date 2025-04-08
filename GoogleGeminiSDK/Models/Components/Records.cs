@@ -18,7 +18,7 @@ internal record FunctionCallingConfig(FunctionCallingMode? Mode, IList<string>? 
 
 internal record FunctionDeclaration(string Name, string Description, Schema? Parameters);
 
-internal record FunctionResponse(string Name, Dictionary<string, object?>? Response);
+internal record FunctionResponse(Dictionary<string, object?>? Response);
 
 internal record GoogleSearchRetrieval(DynamicRetrievalConfig DynamicRetrievalConfig);
 

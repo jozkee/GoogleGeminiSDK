@@ -77,29 +77,32 @@ public class GeminiChat
 	/// Pass <c>null</c> to use default settings.
 	/// </param>
 	/// <returns>
-	/// A <see cref="ChatMessage"/> object representing containing the response message.
+	/// A list of <see cref="ChatMessage"/> elements containing the response messages.
 	/// </returns>
-	public async Task<ChatMessage> SendMessage(string message, IList<byte[]>? attachments = null, GeminiSettings? settings = null)
+	public async Task<IList<ChatMessage>> SendMessage(string message, IList<byte[]>? attachments = null, GeminiSettings? settings = null)
 	{
 		var convertedOptions = settings?.ToChatOption();
 		PrepareMessage(message, attachments);
 
 		// send to gemini
-		var chatResponse = await _client.CompleteAsync(_messages, convertedOptions);
-		
-		// set message id of gemini response before appending to message history
-		chatResponse.Message.AdditionalProperties = new AdditionalPropertiesDictionary()
-		{
-			{"id", (ulong)_messages.Count}	
-		};
-		_messages.Add(chatResponse.Message);
+		var chatResponse = await _client.GetResponseAsync(_messages, convertedOptions);
 
-		OnChatReceive?.Invoke(this, new ChatReceiveEventArgs(chatResponse.Message));
+		// set message id of gemini response before appending to message history
+		foreach (var responseMessage in chatResponse.Messages)
+		{
+			responseMessage.AdditionalProperties = new AdditionalPropertiesDictionary()
+			{
+				{"id", (ulong)_messages.Count}
+			};
+		}
+		_messages.AddRange(chatResponse.Messages);
+
+		OnChatReceive?.Invoke(this, new ChatReceiveEventArgs(chatResponse.Messages));
 
 		if (settings is { Conversational: false })
 			ClearHistory();
 
-		return chatResponse.Message;
+		return chatResponse.Messages;
 	}
 
 	/// <summary>
@@ -119,7 +122,7 @@ public class GeminiChat
 	/// <returns>
 	/// A <see cref="ChatMessage"/> object representing containing the response message.
 	/// </returns>
-	public async IAsyncEnumerable<StreamingChatCompletionUpdate> SendMessageStreaming(string message, IList<byte[]>? attachments = null, GeminiSettings? settings = null)
+	public IAsyncEnumerable<ChatResponseUpdate> SendMessageStreaming(string message, IList<byte[]>? attachments = null, GeminiSettings? settings = null)
 	{
 		var convertedOptions = settings?.ToChatOption();
 
@@ -135,9 +138,7 @@ public class GeminiChat
 		PrepareMessage(message, attachments);
 
 		// send to gemini
-		var chatResponse = _client.CompleteStreamingAsync(_messages, convertedOptions);
-		await foreach (var update in chatResponse)
-			yield return update;
+		return _client.GetStreamingResponseAsync(_messages, convertedOptions);
 	}
 
 	private void PrepareMessage(string message, IList<byte[]>? attachments = null)
@@ -168,7 +169,7 @@ public class GeminiChat
 		};
 		_messages.Add(userMsg);
 
-		OnChatReceive?.Invoke(this, new ChatReceiveEventArgs(userMsg));
+		OnChatReceive?.Invoke(this, new ChatReceiveEventArgs([userMsg]));
 	}
 
 }

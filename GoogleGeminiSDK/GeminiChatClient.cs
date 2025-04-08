@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using GoogleGeminiSDK.Models.Components;
@@ -35,7 +37,7 @@ public class GeminiChatClient : IChatClient
 	}
 
 	/// <inheritdoc />
-	public async Task<ChatCompletion> CompleteAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null,
+	public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null,
 		CancellationToken cancellationToken = new())
 	{
 		var response = await SendToGemini(chatMessages, cancellationToken, options);
@@ -44,15 +46,15 @@ public class GeminiChatClient : IChatClient
 		response = await HandleAiTools(response, chatMessages, options, cancellationToken);
 
 		// deserialize gemini response
-		return new ChatCompletion(FromGeminiResponse(response))
+		return new ChatResponse(FromGeminiResponse(response))
 		{
-			ModelId = Metadata.ModelId,
+			ModelId = Metadata.DefaultModelId,
 			FinishReason = ToFinishReason(response)
 		};
 	}
 
 	/// <inheritdoc />
-	public async IAsyncEnumerable<StreamingChatCompletionUpdate> CompleteStreamingAsync(IList<ChatMessage> chatMessages,
+	public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages,
 		ChatOptions? options = null,
 		[EnumeratorCancellation] CancellationToken cancellationToken = new())
 	{
@@ -64,11 +66,7 @@ public class GeminiChatClient : IChatClient
 				var firstCandidate = newChunkResponse.Candidates[0];
 				var chatContent = firstCandidate.Content;
 				var firstPart = chatContent.Parts.First();
-				yield return new StreamingChatCompletionUpdate
-				{
-					Text = firstPart.Text,
-					Role = new ChatRole(chatContent.Role!)
-				};
+				yield return new ChatResponseUpdate(new ChatRole(chatContent.Role!), firstPart.Text);
 			}
 		}
 	}
@@ -85,9 +83,9 @@ public class GeminiChatClient : IChatClient
 
 	private Uri GetChatEndpoint(bool streaming = false) =>
 		new(DefaultGeminiEndpoint,
-			$"v1beta/models/{Metadata.ModelId}:{(streaming ? "streamGenerateContent?alt=sse&" : "generateContent?")}key={ApiKey}");
+			$"v1beta/models/{Metadata.DefaultModelId}:{(streaming ? "streamGenerateContent?alt=sse&" : "generateContent?")}key={ApiKey}");
 
-	private async Task<GenerateContentResponse> SendToGemini(IList<ChatMessage> chatMessages,
+	private async Task<GenerateContentResponse> SendToGemini(IEnumerable<ChatMessage> chatMessages,
 		CancellationToken cancellationToken, ChatOptions? options = null)
 	{
 		using var httpResponse = await _httpClient.PostAsJsonAsync(
@@ -109,7 +107,7 @@ public class GeminiChatClient : IChatClient
 		return response;
 	}
 
-	private async IAsyncEnumerable<GenerateContentResponse> SendToGeminiStream(IList<ChatMessage> chatMessages,
+	private async IAsyncEnumerable<GenerateContentResponse> SendToGeminiStream(IEnumerable<ChatMessage> chatMessages,
 		[EnumeratorCancellation] CancellationToken cancellationToken, ChatOptions? options = null)
 	{
 		using HttpRequestMessage request = new(HttpMethod.Post, GetChatEndpoint(true));
@@ -146,7 +144,7 @@ public class GeminiChatClient : IChatClient
 	#region Tool Handlers
 
 	private async Task<GenerateContentResponse> HandleAiTools(GenerateContentResponse response,
-		IList<ChatMessage> chatMessages, ChatOptions? options,
+		IEnumerable<ChatMessage> chatMessages, ChatOptions? options,
 		CancellationToken cancellationToken)
 	{
 		var updatedChats = await HandleAiToolsInternal(response, chatMessages, options, cancellationToken);
@@ -157,7 +155,7 @@ public class GeminiChatClient : IChatClient
 	}
 
 	private async IAsyncEnumerable<GenerateContentResponse> HandleAiToolsStream(GenerateContentResponse response,
-		IList<ChatMessage> chatMessages, ChatOptions? options,
+		IEnumerable<ChatMessage> chatMessages, ChatOptions? options,
 		[EnumeratorCancellation] CancellationToken cancellationToken)
 	{
 		var updatedChats = await HandleAiToolsInternal(response, chatMessages, options, cancellationToken);
@@ -174,7 +172,7 @@ public class GeminiChatClient : IChatClient
 	}
 
 	private async Task<IList<ChatMessage>?> HandleAiToolsInternal(GenerateContentResponse response,
-		IList<ChatMessage> chatMessages, ChatOptions? options,
+		IEnumerable<ChatMessage> chatMessages, ChatOptions? options,
 		CancellationToken cancellationToken)
 	{
 		var fCallModelContent = new List<AIContent>();
@@ -200,19 +198,19 @@ public class GeminiChatClient : IChatClient
 				continue;
 
 			// fetch AI function by name
-			var currentAiFunction = aiFuncTools.First(x => x.Metadata.Name == p.FunctionCall.Name);
+			var currentAiFunction = aiFuncTools.First(x => x.Name == p.FunctionCall.Name);
 
 			//execute function called by LLM
 			var jsonRetValue =
-				(JsonElement?)await currentAiFunction.InvokeAsync(p.FunctionCall.Args, cancellationToken);
+				(JsonElement?)await currentAiFunction.InvokeAsync(new AIFunctionArguments(p.FunctionCall.Args), cancellationToken);
 
 			// deserialize return value
 			object? deserializedRetValue =
-				jsonRetValue?.Deserialize(currentAiFunction.Metadata.ReturnParameter.ParameterType!);
+				jsonRetValue?.Deserialize(currentAiFunction.UnderlyingMethod!.ReturnParameter.ParameterType!);
 
 			// deserialize args to its correct type
 			IDictionary<string, object?> deserializedArgs = new Dictionary<string, object?>();
-			var argTypeMap = currentAiFunction.Metadata.Parameters.ToDictionary(x => x.Name, x => x.ParameterType);
+			var argTypeMap = currentAiFunction.UnderlyingMethod!.GetParameters().ToDictionary(x => x.Name, x => x.ParameterType);
 			if (p.FunctionCall.Args != null)
 			{
 				foreach (var arg in p.FunctionCall.Args)
@@ -231,7 +229,7 @@ public class GeminiChatClient : IChatClient
 			// append to function call response
 			var modelCallContent = new FunctionCallContent("", p.FunctionCall.Name,
 				deserializedArgs);
-			var fReturnContent = new FunctionResultContent(modelCallContent.CallId, p.FunctionCall.Name,
+			var fReturnContent = new FunctionResultContent(modelCallContent.CallId,
 				new Dictionary<string, object?> { { p.FunctionCall.Name, deserializedRetValue } });
 			fCallModelContent.Add(modelCallContent);
 			fCallReturnContent.Add(fReturnContent);
@@ -266,7 +264,7 @@ public class GeminiChatClient : IChatClient
 		return chatContent.ToChatMessage();
 	}
 
-	private static GeminiGenerateContentRequest ToGeminiMessage(IList<ChatMessage> chatMessages, ChatOptions? options)
+	private static GeminiGenerateContentRequest ToGeminiMessage(IEnumerable<ChatMessage> chatMessages, ChatOptions? options)
 	{
 		var convertedMessages = chatMessages.ToGemini().ToList();
 		var additionalProperties = options?.AdditionalProperties;
@@ -332,14 +330,16 @@ public class GeminiChatClient : IChatClient
 		var funcDecls = options.Tools.OfType<AIFunction>()
 			.Select(af =>
 			{
-				string fName = af.Metadata.Name;
-				string fDesc = af.Metadata.Description;
-				var fParams = af.Metadata.Parameters.Count > 0
+				string fName = af.Name;
+				string fDesc = af.Description;
+				var fParams = af.UnderlyingMethod?.GetParameters();
+
+				var paramsSchema = fParams?.Length > 0 
 					? new Schema(SchemaType.OBJECT, // only allowed for OBJECT type
-						Properties: af.Metadata.Parameters.ToDictionary(x => x.Name,
-							y => new Schema(GetSchemaType(y.ParameterType), Description: y.Description)))
+						Properties: fParams.ToDictionary(x => x.Name!,
+							y => new Schema(GetSchemaType(y.ParameterType), Description: y.GetCustomAttribute<DescriptionAttribute>(inherit: true)?.Description)))
 					: null;
-				return new FunctionDeclaration(fName, fDesc, fParams);
+				return new FunctionDeclaration(fName, fDesc, paramsSchema);
 			}).ToList();
 
 		if (funcDecls.Count > 0)

@@ -9,7 +9,7 @@ internal static class Extensions
 		string key) =>
 		(TPropertyType?)dictionary.GetValueOrDefault(key);
 
-	internal static IEnumerable<Content> ToGemini(this IList<ChatMessage> messages) =>
+	internal static IEnumerable<Content> ToGemini(this IEnumerable<ChatMessage> messages) =>
 		messages.Select(x => new Content(
 			ToGeminiMessageParts(x),
 			x.Role.Value
@@ -46,7 +46,7 @@ internal static class Extensions
 				FunctionCallContent functionCall => new Part(
 					FunctionCall: new FunctionCall(functionCall.Name, functionCall.Arguments)),
 				FunctionResultContent functionResultContent => new Part(
-					FunctionResponse: new FunctionResponse(functionResultContent.Name,
+					FunctionResponse: new FunctionResponse(
 						(Dictionary<string, object?>?)functionResultContent.Result)),
 				_ => null
 			};
